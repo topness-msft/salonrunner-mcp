@@ -77,7 +77,7 @@ export function registerTools(server: McpServer, client: SalonRunnerClient) {
       const [appts, services, employees] = await Promise.all([
         client.listAppointments(),
         client.listServices(),
-        client.listEmployees(),
+        client.listAllEmployees(),
       ]);
       const svc = new Map(services.map((s) => [s.id, s.name]));
       const emp = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));

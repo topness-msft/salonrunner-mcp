@@ -93,49 +93,69 @@ export class SalonRunnerClient {
     }
   }
 
+  /**
+   * Discover the numeric customerId for the logged-in account. `authv2.json`
+   * requires it (it returns `{}` without it). The booking page reliably embeds
+   * it as `customerId = NNNN` in its inline JS; appointment rows carry it too.
+   */
+  private async resolveCustomerId(): Promise<number> {
+    if (this._customerId) return this._customerId;
+    if (!this.cookies.size) await this.login();
+
+    const newPage = await fetch(`${this.cfg.base}/customer/appointments/new.htm`, {
+      headers: { Accept: "text/html", Cookie: this.cookieHeader() },
+    });
+    const html = await newPage.text();
+    let m = html.match(/customerId["'=:\s]{1,6}(\d{4,})/i);
+    if (!m) {
+      const appts = await fetch(`${this.cfg.base}/customer/appointments/fetchAppointments.htm`, {
+        headers: { Cookie: this.cookieHeader() },
+      });
+      m = (await appts.text()).match(/data-customer-id=["'](\d+)["']/i);
+    }
+    if (!m) throw new Error("Could not discover customerId after login; set SALONRUNNER_CUSTOMER_ID.");
+    this._customerId = parseInt(m[1], 10);
+    return this._customerId;
+  }
+
+  /** Mint a customer JWT for the given customerId (returns null token body if invalid). */
+  private async mintToken(customerId: number): Promise<AuthToken | null> {
+    const res = await fetch(
+      `${this.cfg.base}/customer/authv2.json?salonId=${this.cfg.salonId}&customerId=${customerId}`,
+      { headers: { Accept: "application/json", Cookie: this.cookieHeader() } }
+    );
+    const text = await res.text();
+    if (!text.trimStart().startsWith("{")) return null; // session expired -> login HTML
+    const parsed = JSON.parse(text) as Partial<AuthToken>;
+    return parsed.token ? (parsed as AuthToken) : null; // `{}` when customerId missing/invalid
+  }
+
   /** Ensure we hold a valid (non-expired) JWT, logging in / refreshing as needed. */
   private async ensureToken(): Promise<string> {
     if (this.jwt && Date.now() < this.jwtExpiresAt - 120_000) return this.jwt;
 
     if (!this.cookies.size) await this.login();
+    let auth = await this.mintToken(await this.resolveCustomerId());
 
-    let res = await fetch(
-      `${this.cfg.base}/customer/authv2.json?salonId=${this.cfg.salonId}`,
-      { headers: { Accept: "application/json", Cookie: this.cookieHeader() } }
-    );
-    let text = await res.text();
-
-    // Session expired -> the endpoint returns the login HTML page. Re-login once.
-    if (!text.trimStart().startsWith("{")) {
+    // Session expired -> re-login (and re-discover customerId) once.
+    if (!auth) {
       this.cookies.clear();
+      this._customerId = this.cfg.customerId;
       await this.login();
-      res = await fetch(
-        `${this.cfg.base}/customer/authv2.json?salonId=${this.cfg.salonId}`,
-        { headers: { Accept: "application/json", Cookie: this.cookieHeader() } }
-      );
-      text = await res.text();
-      if (!text.trimStart().startsWith("{")) {
-        throw new Error(`Could not mint customer token (HTTP ${res.status}).`);
-      }
+      auth = await this.mintToken(await this.resolveCustomerId());
+      if (!auth) throw new Error("Could not mint customer token after re-login.");
     }
 
-    const auth = JSON.parse(text) as AuthToken;
     const payload = decodeJwt(auth.token);
     this.jwt = auth.token;
     this.jwtExpiresAt = payload.exp * 1000;
     this.corporateId = payload.salon.c;
-    if (!this._customerId) {
-      const m = payload.sub.match(/custId:(\d+)/);
-      if (m) this._customerId = parseInt(m[1], 10);
-    }
     return this.jwt;
   }
 
   async customerId(): Promise<number> {
     if (this._customerId) return this._customerId;
-    await this.ensureToken();
-    if (!this._customerId) throw new Error("Could not determine customerId; set SALONRUNNER_CUSTOMER_ID.");
-    return this._customerId;
+    return this.resolveCustomerId();
   }
 
   // ---- low-level requests ----------------------------------------------
@@ -178,6 +198,12 @@ export class SalonRunnerClient {
     return this.embedded<Employee>(data, "employees");
   }
 
+  /** All active employees — used for resolving provider names (a superset of the online list). */
+  async listAllEmployees(): Promise<Employee[]> {
+    const data = await this.v2(`/employees?active=true`);
+    return this.embedded<Employee>(data, "employees");
+  }
+
   async listEmployeeServices(): Promise<EmployeeService[]> {
     const data = await this.v2(`/employeeServices?includeTerminated=false`);
     return this.embedded<EmployeeService>(data, "employeeServices");
@@ -213,17 +239,24 @@ export class SalonRunnerClient {
     to: string,
     employeeId?: number
   ): Promise<AvailableSlot[]> {
-    const [services, employees, empServices] = await Promise.all([
+    const [services, onlineEmployees, allEmployees, empServices] = await Promise.all([
       this.listServices(),
       this.listEmployees(),
+      this.listAllEmployees(),
       this.listEmployeeServices(),
     ]);
     const service = services.find((s) => s.id === serviceId);
     if (!service) throw new Error(`Unknown serviceId ${serviceId}. Use list_services.`);
 
     const increment = this.cfg.slotMinutes;
+    // Only providers who take online bookings AND offer this service online.
+    const onlineIds = new Set(onlineEmployees.filter((e) => e.availableOnline).map((e) => e.id));
     const candidates = empServices.filter(
-      (es) => es.serviceId === serviceId && es.online && (!employeeId || es.employeeId === employeeId)
+      (es) =>
+        es.serviceId === serviceId &&
+        es.online &&
+        onlineIds.has(es.employeeId) &&
+        (!employeeId || es.employeeId === employeeId)
     );
     if (!candidates.length) {
       throw new Error(`No online provider offers serviceId ${serviceId}${employeeId ? ` (employee ${employeeId})` : ""}.`);
@@ -231,7 +264,7 @@ export class SalonRunnerClient {
 
     const out: AvailableSlot[] = [];
     for (const es of candidates) {
-      const emp = employees.find((e) => e.id === es.employeeId);
+      const emp = allEmployees.find((e) => e.id === es.employeeId);
       const name = emp ? `${emp.firstName} ${emp.lastName}`.trim() : `Employee ${es.employeeId}`;
       const needed = Math.max(1, Math.ceil((es.duration + es.processTime) / increment));
       const days = await this.daySchedules(es.employeeId, from, to);
