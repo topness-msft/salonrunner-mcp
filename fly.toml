@@ -1,6 +1,6 @@
 # fly.toml — deploy your own SalonRunner MCP server.
 # Rename `app` to something unique, then: fly launch --no-deploy && fly deploy
-app = "salonrunner-mcp"
+app = "salonrunner-mcp-egi3"
 primary_region = "iad"
 
 [build]
