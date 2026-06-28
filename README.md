@@ -38,18 +38,25 @@ default 15).
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in:
+There are two ways to run it, and they get their salon credentials differently:
 
-| Variable | Required | Notes |
-|----------|----------|-------|
-| `SALONRUNNER_SALON_ID` | ✅ | The `id` in your booking URL `…/customer/login.htm?id=XXXXX` |
-| `SALONRUNNER_USERNAME` / `SALONRUNNER_PASSWORD` | ✅ | Your client login |
-| `SALONRUNNER_CUSTOMER_ID` | — | Auto-discovered; set only if discovery fails |
-| `SALONRUNNER_SLOT_MINUTES` | — | Salon booking granularity (default 15) |
-| `SALONRUNNER_READ_ONLY` | — | `true` disables book/cancel while you try it out |
-| `MCP_AUTH_PASSWORD` | HTTP only | Password claude.ai will prompt for; **server won't start without it** |
-| `SESSION_SIGNING_KEY` | HTTP only | Signs OAuth tokens so authorization survives restarts/scale-to-zero (>=16 chars) |
-| `PUBLIC_URL` | HTTP only | This server's public URL, e.g. `https://your-app.fly.dev` |
+- **Local (stdio):** credentials come from the environment (`.env`).
+- **Remote (HTTP, claude.ai):** credentials are entered on the connector's **login screen** and
+  encrypted into the token — the server needs **no** salon credentials in its environment.
+
+| Variable | Used by | Notes |
+|----------|---------|-------|
+| `SALONRUNNER_SALON_ID` | stdio | The `id` in your booking URL `…/customer/login.htm?id=XXXXX` |
+| `SALONRUNNER_USERNAME` / `SALONRUNNER_PASSWORD` | stdio | Your client login |
+| `SALONRUNNER_CUSTOMER_ID` | both | Auto-discovered; set only if discovery fails |
+| `SALONRUNNER_SLOT_MINUTES` | both | Salon booking granularity (default 15) |
+| `SALONRUNNER_READ_ONLY` | both | `true` disables book/cancel while you try it out |
+| `SESSION_SIGNING_KEY` | HTTP | Signs tokens + encrypts the credentials inside them; survives restarts/scale-to-zero (>=16 chars) |
+| `PUBLIC_URL` | HTTP | This server's public URL, e.g. `https://your-app.fly.dev` |
+
+In HTTP mode the salon id + username + password are collected on the login screen (validated by a
+real SalonRunner login) and encrypted into the OAuth token, so **one deployment can serve multiple
+salons** and there are no salon secrets on the server.
 
 ## Option A — Local (Claude Desktop / Cursor / Copilot CLI)
 
@@ -86,46 +93,47 @@ claude.ai can only use **remote** MCP servers, so you deploy your own instance.
 ```bash
 fly launch --no-deploy          # pick a unique app name; creates the app
 fly secrets set \
-  SALONRUNNER_SALON_ID=21248 \
-  SALONRUNNER_USERNAME=you@example.com \
-  SALONRUNNER_PASSWORD=your-password \
-  MCP_AUTH_PASSWORD=choose-a-connector-password \
   SESSION_SIGNING_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))") \
   PUBLIC_URL=https://YOUR-APP.fly.dev
 fly deploy
 fly scale count 1               # in-memory MCP sessions: keep a single instance
 ```
 
-The server **refuses to start** without `MCP_AUTH_PASSWORD` and `SESSION_SIGNING_KEY`,
-so you can't accidentally expose an open booking endpoint. Credentials are stored as
-encrypted Fly secrets and OAuth tokens are signed (not held in memory), so the app
-**scales to zero** between uses and you **authorize in claude.ai only once** — cold
-starts (~3s) are transparent and never re-prompt.
+No salon credentials are configured here — users supply them on the login screen. The server
+**refuses to start** without `SESSION_SIGNING_KEY`. Credentials are validated by a real
+SalonRunner login and then encrypted into the (signed) token, which claude.ai stores, so the app
+**scales to zero** between uses and you **authorize only once** — cold starts (~3s) are
+transparent and never re-prompt.
 
 ### Connect in claude.ai
 
 1. **Settings → Connectors → Add custom connector**.
 2. URL: `https://YOUR-APP.fly.dev/mcp`
-3. Claude runs an OAuth flow → enter your `MCP_AUTH_PASSWORD` on the consent screen.
+3. Claude opens the connector's login screen → enter your **salon id + username + password**.
 4. The six tools appear in chat.
 
 ### Run the remote server locally (testing)
 
 ```bash
-MCP_AUTH_PASSWORD=test PUBLIC_URL=http://localhost:8787 npm run start:http
+SESSION_SIGNING_KEY=local-dev-please-change PUBLIC_URL=http://localhost:8787 npm run start:http
 ```
 
 ## Security model
 
 Two independent auth layers:
 
-1. **claude.ai ↔ this server** — OAuth 2.1 (PKCE + dynamic client registration), single user,
-   gated by `MCP_AUTH_PASSWORD`. Tokens are **signed with `SESSION_SIGNING_KEY`** (stateless),
-   so authorization survives restarts and scale-to-zero. (Local stdio mode needs none.)
-2. **this server ↔ SalonRunner** — your login → session cookie → short-lived JWT, auto-refreshed.
+1. **claude.ai ↔ this server** — OAuth 2.1 (PKCE + dynamic client registration). The login
+   screen authenticates the user with a **real SalonRunner login**; the credentials are then
+   **AES-GCM encrypted and embedded inside the HMAC-signed token** (keyed by `SESSION_SIGNING_KEY`).
+   No server-side session store, so authorization survives restarts and scale-to-zero.
+2. **this server ↔ SalonRunner** — login → session cookie → short-lived JWT, auto-refreshed,
+   using the credentials decrypted from the caller's token.
 
-Because each user deploys their own instance, the server is single-tenant: it only ever holds
-**your** credentials. Keep your deployment private and your `MCP_AUTH_PASSWORD` strong.
+The server holds **no salon credentials at rest** — they live (encrypted) inside each user's
+token and are only decrypted in memory per request. One deployment can serve multiple salons.
+A leaked token can't be revoked individually; rotate `SESSION_SIGNING_KEY` to invalidate **all**
+tokens (everyone re-enters credentials once). Keep `SESSION_SIGNING_KEY` secret and serve only
+over HTTPS.
 
 ## Notes & limitations
 
