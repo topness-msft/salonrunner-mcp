@@ -48,6 +48,7 @@ Copy `.env.example` to `.env` and fill in:
 | `SALONRUNNER_SLOT_MINUTES` | — | Salon booking granularity (default 15) |
 | `SALONRUNNER_READ_ONLY` | — | `true` disables book/cancel while you try it out |
 | `MCP_AUTH_PASSWORD` | HTTP only | Password claude.ai will prompt for; **server won't start without it** |
+| `SESSION_SIGNING_KEY` | HTTP only | Signs OAuth tokens so authorization survives restarts/scale-to-zero (>=16 chars) |
 | `PUBLIC_URL` | HTTP only | This server's public URL, e.g. `https://your-app.fly.dev` |
 
 ## Option A — Local (Claude Desktop / Cursor / Copilot CLI)
@@ -89,12 +90,17 @@ fly secrets set \
   SALONRUNNER_USERNAME=you@example.com \
   SALONRUNNER_PASSWORD=your-password \
   MCP_AUTH_PASSWORD=choose-a-connector-password \
+  SESSION_SIGNING_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))") \
   PUBLIC_URL=https://YOUR-APP.fly.dev
 fly deploy
+fly scale count 1               # in-memory MCP sessions: keep a single instance
 ```
 
-The server **refuses to start** without `MCP_AUTH_PASSWORD`, so you can't accidentally expose
-an open booking endpoint. It scales to zero between uses (`fly.toml`).
+The server **refuses to start** without `MCP_AUTH_PASSWORD` and `SESSION_SIGNING_KEY`,
+so you can't accidentally expose an open booking endpoint. Credentials are stored as
+encrypted Fly secrets and OAuth tokens are signed (not held in memory), so the app
+**scales to zero** between uses and you **authorize in claude.ai only once** — cold
+starts (~3s) are transparent and never re-prompt.
 
 ### Connect in claude.ai
 
@@ -114,7 +120,8 @@ MCP_AUTH_PASSWORD=test PUBLIC_URL=http://localhost:8787 npm run start:http
 Two independent auth layers:
 
 1. **claude.ai ↔ this server** — OAuth 2.1 (PKCE + dynamic client registration), single user,
-   gated by `MCP_AUTH_PASSWORD`. (Local stdio mode needs none.)
+   gated by `MCP_AUTH_PASSWORD`. Tokens are **signed with `SESSION_SIGNING_KEY`** (stateless),
+   so authorization survives restarts and scale-to-zero. (Local stdio mode needs none.)
 2. **this server ↔ SalonRunner** — your login → session cookie → short-lived JWT, auto-refreshed.
 
 Because each user deploys their own instance, the server is single-tenant: it only ever holds

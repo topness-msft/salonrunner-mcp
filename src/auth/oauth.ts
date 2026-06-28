@@ -1,50 +1,70 @@
-import express, { type Request, type Response, type RequestHandler, Router } from "express";
+import express, { type Response, type RequestHandler, Router } from "express";
 import crypto from "node:crypto";
 
 /**
- * Minimal single-user OAuth 2.1 provider so a *self-hosted* server can be added
- * to claude.ai as a custom connector without exposing an open booking endpoint.
+ * Stateless single-user OAuth 2.1 provider for self-hosted MCP servers
+ * (claude.ai custom connectors).
  *
- * - Dynamic Client Registration (RFC 7591)        POST /register
- * - Authorization Server Metadata (RFC 8414)      GET  /.well-known/oauth-authorization-server
- * - Protected Resource Metadata (RFC 9728)        GET  /.well-known/oauth-protected-resource
- * - Authorization endpoint (PKCE S256)            GET  /authorize  POST /authorize
- * - Token endpoint (code + refresh)               POST /token
+ * Everything is HMAC-signed with SESSION_SIGNING_KEY rather than stored in memory,
+ * so issued client_ids, authorization codes and tokens remain valid across machine
+ * restarts and scale-to-zero — no re-authorization after a cold start, and no
+ * server-side session store.
  *
- * "Single user" = anyone who knows MCP_AUTH_PASSWORD (the deployer). This is the
- * gate between claude.ai and *your* instance; your SalonRunner creds live in env.
+ *   POST /register                              (RFC 7591) -> signed client_id
+ *   GET  /.well-known/oauth-authorization-server (RFC 8414)
+ *   GET  /.well-known/oauth-protected-resource   (RFC 9728)
+ *   GET/POST /authorize                          (PKCE S256, password gate)
+ *   POST /token                                  (code + refresh)
+ *
+ * "Single user" = anyone who knows MCP_AUTH_PASSWORD (the deployer). SalonRunner
+ * credentials live in env/secrets, not here.
  */
 
-interface Client {
-  client_id: string;
-  redirect_uris: string[];
-}
-interface PendingCode {
-  clientId: string;
-  redirectUri: string;
-  codeChallenge: string;
-  expires: number;
+const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+
+interface Signed {
+  t: "client" | "code" | "access" | "refresh";
+  exp?: number;
+  [k: string]: unknown;
 }
 
-const b64url = (b: Buffer) => b.toString("base64url");
-const randomId = () => b64url(crypto.randomBytes(24));
+function makeSigner(key: string) {
+  const mac = (body: string) => crypto.createHmac("sha256", key).update(body).digest("base64url");
+  const sign = (payload: Signed): string => {
+    const body = b64url(JSON.stringify(payload));
+    return `${body}.${mac(body)}`;
+  };
+  const verify = (token: string | undefined, type: Signed["t"]): Signed | null => {
+    if (!token) return null;
+    const dot = token.lastIndexOf(".");
+    if (dot < 0) return null;
+    const body = token.slice(0, dot);
+    const sig = token.slice(dot + 1);
+    const expected = mac(body);
+    if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+    let payload: Signed;
+    try {
+      payload = JSON.parse(Buffer.from(body, "base64url").toString());
+    } catch {
+      return null;
+    }
+    if (payload.t !== type) return null;
+    if (payload.exp && Date.now() > payload.exp) return null;
+    return payload;
+  };
+  return { sign, verify };
+}
 
-export function buildOAuth(publicUrl: string, password: string) {
+export function buildOAuth(publicUrl: string, password: string, signingKey: string) {
   const issuer = publicUrl.replace(/\/$/, "");
-  const clients = new Map<string, Client>();
-  const codes = new Map<string, PendingCode>();
-  const accessTokens = new Map<string, number>(); // token -> expiry ms
-  const refreshTokens = new Set<string>();
+  const { sign, verify } = makeSigner(signingKey);
 
   const router = Router();
   router.use(express.urlencoded({ extended: true }));
   router.use(express.json());
 
   // --- discovery metadata ---
-  const resourceMeta = {
-    resource: `${issuer}/mcp`,
-    authorization_servers: [issuer],
-  };
+  const resourceMeta = { resource: `${issuer}/mcp`, authorization_servers: [issuer] };
   router.get("/.well-known/oauth-protected-resource", (_req, res) => res.json(resourceMeta));
   router.get("/.well-known/oauth-protected-resource/mcp", (_req, res) => res.json(resourceMeta));
 
@@ -61,21 +81,25 @@ export function buildOAuth(publicUrl: string, password: string) {
     })
   );
 
-  // --- dynamic client registration ---
+  // --- dynamic client registration (stateless: client_id encodes redirect_uris) ---
   router.post("/register", (req, res) => {
     const redirectUris: string[] = req.body?.redirect_uris ?? [];
     if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
       return res.status(400).json({ error: "invalid_redirect_uri" });
     }
-    const client: Client = { client_id: randomId(), redirect_uris: redirectUris };
-    clients.set(client.client_id, client);
+    const client_id = sign({ t: "client", redirect_uris: redirectUris, iat: Date.now() });
     res.status(201).json({
-      client_id: client.client_id,
+      client_id,
       redirect_uris: redirectUris,
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code", "refresh_token"],
     });
   });
+
+  function clientRedirects(clientId: string): string[] | null {
+    const c = verify(clientId, "client");
+    return c ? (c.redirect_uris as string[]) : null;
+  }
 
   // --- authorization endpoint ---
   function renderLogin(res: Response, params: Record<string, string>, error?: string) {
@@ -99,8 +123,8 @@ ${error ? `<p style="color:#c00">${escapeHtml(error)}</p>` : ""}
     if (q.response_type !== "code" || !q.client_id || !q.redirect_uri || q.code_challenge_method !== "S256") {
       return res.status(400).send("invalid_request");
     }
-    const client = clients.get(q.client_id);
-    if (!client || !client.redirect_uris.includes(q.redirect_uri)) return res.status(400).send("invalid_client");
+    const redirects = clientRedirects(q.client_id);
+    if (!redirects || !redirects.includes(q.redirect_uri)) return res.status(400).send("invalid_client");
     renderLogin(res, {
       client_id: q.client_id,
       redirect_uri: q.redirect_uri,
@@ -111,13 +135,12 @@ ${error ? `<p style="color:#c00">${escapeHtml(error)}</p>` : ""}
 
   router.post("/authorize", (req, res) => {
     const { client_id, redirect_uri, state, code_challenge, password: pw } = req.body ?? {};
-    const client = clients.get(client_id);
-    if (!client || !client.redirect_uris.includes(redirect_uri)) return res.status(400).send("invalid_client");
+    const redirects = clientRedirects(client_id);
+    if (!redirects || !redirects.includes(redirect_uri)) return res.status(400).send("invalid_client");
     if (pw !== password) {
       return renderLogin(res, { client_id, redirect_uri, state: state ?? "", code_challenge }, "Incorrect password.");
     }
-    const code = randomId();
-    codes.set(code, { clientId: client_id, redirectUri: redirect_uri, codeChallenge: code_challenge, expires: Date.now() + 60_000 });
+    const code = sign({ t: "code", redirect_uri, cc: code_challenge, exp: Date.now() + 60_000 });
     const url = new URL(redirect_uri);
     url.searchParams.set("code", code);
     if (state) url.searchParams.set("state", state);
@@ -129,39 +152,35 @@ ${error ? `<p style="color:#c00">${escapeHtml(error)}</p>` : ""}
     const { grant_type } = req.body ?? {};
     if (grant_type === "authorization_code") {
       const { code, code_verifier, redirect_uri } = req.body;
-      const pending = codes.get(code);
-      codes.delete(code);
-      if (!pending || pending.expires < Date.now() || pending.redirectUri !== redirect_uri) {
-        return res.status(400).json({ error: "invalid_grant" });
-      }
+      const payload = verify(code, "code");
+      if (!payload || payload.redirect_uri !== redirect_uri) return res.status(400).json({ error: "invalid_grant" });
       const challenge = b64url(crypto.createHash("sha256").update(code_verifier ?? "").digest());
-      if (challenge !== pending.codeChallenge) return res.status(400).json({ error: "invalid_grant" });
+      if (challenge !== payload.cc) return res.status(400).json({ error: "invalid_grant" });
       return res.json(issueTokens());
     }
     if (grant_type === "refresh_token") {
-      const { refresh_token } = req.body;
-      if (!refreshTokens.has(refresh_token)) return res.status(400).json({ error: "invalid_grant" });
-      refreshTokens.delete(refresh_token);
+      const payload = verify(req.body?.refresh_token, "refresh");
+      if (!payload) return res.status(400).json({ error: "invalid_grant" });
       return res.json(issueTokens());
     }
     res.status(400).json({ error: "unsupported_grant_type" });
   });
 
   function issueTokens() {
-    const access = randomId();
-    const refresh = randomId();
     const ttl = 3600;
-    accessTokens.set(access, Date.now() + ttl * 1000);
-    refreshTokens.add(refresh);
-    return { access_token: access, token_type: "Bearer", expires_in: ttl, refresh_token: refresh };
+    return {
+      access_token: sign({ t: "access", sub: "user", exp: Date.now() + ttl * 1000 }),
+      token_type: "Bearer",
+      expires_in: ttl,
+      refresh_token: sign({ t: "refresh", sub: "user", exp: Date.now() + 30 * 86_400_000 }),
+    };
   }
 
   // --- bearer middleware protecting /mcp ---
   const requireBearer: RequestHandler = (req, res, next) => {
     const auth = req.headers.authorization ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    const exp = accessTokens.get(token);
-    if (!token || !exp || exp < Date.now()) {
+    if (!verify(token, "access")) {
       res
         .status(401)
         .set("WWW-Authenticate", `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource"`)

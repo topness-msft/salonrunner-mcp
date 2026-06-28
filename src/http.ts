@@ -20,10 +20,18 @@ async function main() {
     );
     process.exit(1);
   }
+  const signingKey = process.env.SESSION_SIGNING_KEY;
+  if (!signingKey || signingKey.length < 16) {
+    console.error(
+      "Refusing to start HTTP mode without a strong SESSION_SIGNING_KEY (>=16 chars). " +
+        "Generate one with:  node -e \"console.log(require('crypto').randomBytes(32).toString('base64url'))\""
+    );
+    process.exit(1);
+  }
 
   const app = express();
   const client = createClient(); // single shared SalonRunner session (cached JWT)
-  const { router, requireBearer } = buildOAuth(publicUrl, password);
+  const { router, requireBearer } = buildOAuth(publicUrl, password, signingKey);
   app.use(router);
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
