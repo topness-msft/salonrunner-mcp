@@ -4,9 +4,9 @@ An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant **fin
 cancel salon appointments** through your personal SalonRunner / Rosy Salon Software client
 account — the same booking site many salons use.
 
-It's **self-hosted**: you run your own instance with your own login. Your credentials never
-touch anyone else's server. Works both as a local tool (Claude Desktop, Cursor, Copilot CLI)
-and as a remote connector for **claude.ai**.
+It's **self-hosted**: you deploy your own instance. Run it locally as a tool (Claude Desktop,
+Cursor, Copilot CLI) where credentials stay on your machine, or as a remote connector for
+**claude.ai** where you log in with your SalonRunner account on the connector's login screen.
 
 > ⚠️ Unofficial, uses undocumented endpoints, personal use only. Read [DISCLAIMER.md](./DISCLAIMER.md).
 
@@ -32,9 +32,9 @@ list/find/book/cancel
         └──────writes───► /customer/appointments/{book,cancel}.json  (cookie)
 ```
 
-`customerId` and `corporateId` are read from the JWT automatically. Availability is computed
-from the provider's per-service duration and the salon's slot grid (`SALONRUNNER_SLOT_MINUTES`,
-default 15).
+`customerId` is discovered from your account after login; `corporateId` is read from the JWT.
+Availability is computed from the provider's per-service duration and the salon's slot grid
+(`SALONRUNNER_SLOT_MINUTES`, default 15).
 
 ## Configuration
 
