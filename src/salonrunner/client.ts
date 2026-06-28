@@ -210,6 +210,7 @@ export class SalonRunnerClient {
   }
 
   async listAppointments(): Promise<Appointment[]> {
+    await this.ensureToken(); // guarantees corporateId (read from the JWT) is loaded
     const clientId = await this.customerId();
     const data = await this.v2(
       `/appointments?corporateId=${this.corporateId}&cancelled=false&clientId=${clientId}&from=today&showAllEmployee=true`
