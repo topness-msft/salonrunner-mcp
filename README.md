@@ -60,18 +60,19 @@ salons** and there are no salon secrets on the server.
 
 ## Option A — Local (Claude Desktop / Cursor / Copilot CLI)
 
+Published on npm as [`salonrunner-mcp`](https://www.npmjs.com/package/salonrunner-mcp). Install globally:
+
 ```bash
-npm install && npm run build
+npm install -g salonrunner-mcp
 ```
 
-Add to your client's MCP config (Claude Desktop: `claude_desktop_config.json`):
+Then point your client at the `salonrunner-mcp` command (no build, no absolute paths). Claude Desktop (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "salonrunner": {
-      "command": "node",
-      "args": ["/absolute/path/to/salonrunner-mcp/dist/stdio.js"],
+      "command": "salonrunner-mcp",
       "env": {
         "SALONRUNNER_SALON_ID": "21248",
         "SALONRUNNER_USERNAME": "you@example.com",
@@ -81,6 +82,18 @@ Add to your client's MCP config (Claude Desktop: `claude_desktop_config.json`):
   }
 }
 ```
+
+Prefer no global install? Use `"command": "npx"` with `"args": ["-y", "salonrunner-mcp"]` and the same `env`.
+
+<details>
+<summary>Run from a clone instead</summary>
+
+```bash
+npm install && npm run build
+```
+
+Then use `"command": "node"` with `"args": ["/absolute/path/to/salonrunner-mcp/dist/stdio.js"]` and the same `env`.
+</details>
 
 No hosting, no OAuth — credentials stay on your machine. Recommended if you don't need claude.ai.
 
