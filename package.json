@@ -1,6 +1,7 @@
 {
   "name": "salonrunner-mcp",
   "version": "0.1.0",
+  "mcpName": "io.github.topness-msft/salonrunner-mcp",
   "description": "Self-hosted MCP server for booking salon appointments through SalonRunner / Rosy Salon Software client accounts.",
   "license": "MIT",
   "type": "module",
