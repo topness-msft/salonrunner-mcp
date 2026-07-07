@@ -53,7 +53,8 @@ async function main() {
   };
 
   const app = express();
-  const { router, requireBearer } = buildOAuth(publicUrl, signingKey, validate);
+  const defaultSalonId = process.env.SALONRUNNER_SALON_ID;
+  const { router, requireBearer } = buildOAuth(publicUrl, signingKey, validate, defaultSalonId);
   app.use(router);
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 

@@ -89,9 +89,21 @@ function makeCrypto(signingKey: string) {
   return { sign, verify, encryptCreds, decryptCreds };
 }
 
-export function buildOAuth(publicUrl: string, signingKey: string, validate: ValidateCredentials) {
+export function buildOAuth(
+  publicUrl: string,
+  signingKey: string,
+  validate: ValidateCredentials,
+  defaultSalonId?: string | number
+) {
   const issuer = publicUrl.replace(/\/$/, "");
   const { sign, verify, encryptCreds, decryptCreds } = makeCrypto(signingKey);
+
+  // Advertise the salon id on the authorize link so re-auth in claude.ai pre-fills it.
+  // Per RFC 6749 §3.1 the client must retain this query component and append its own params.
+  const authorizeEndpoint =
+    defaultSalonId != null && String(defaultSalonId) !== ""
+      ? `${issuer}/authorize?salonId=${encodeURIComponent(String(defaultSalonId))}`
+      : `${issuer}/authorize`;
 
   const router = Router();
   router.use(express.urlencoded({ extended: true }));
@@ -104,7 +116,7 @@ export function buildOAuth(publicUrl: string, signingKey: string, validate: Vali
   router.get("/.well-known/oauth-authorization-server", (_req, res) =>
     res.json({
       issuer,
-      authorization_endpoint: `${issuer}/authorize`,
+      authorization_endpoint: authorizeEndpoint,
       token_endpoint: `${issuer}/token`,
       registration_endpoint: `${issuer}/register`,
       response_types_supported: ["code"],
@@ -163,7 +175,8 @@ ${error ? `<p style="color:#c00">${escapeHtml(error)}</p>` : ""}
     }
     const redirects = clientRedirects(q.client_id);
     if (!redirects || !redirects.includes(q.redirect_uri)) return res.status(400).send("invalid_client");
-    renderLogin(res, { client_id: q.client_id, redirect_uri: q.redirect_uri, state: q.state ?? "", code_challenge: q.code_challenge }, {});
+    const prefillSalonId = q.salonId ?? (defaultSalonId != null ? String(defaultSalonId) : "");
+    renderLogin(res, { client_id: q.client_id, redirect_uri: q.redirect_uri, state: q.state ?? "", code_challenge: q.code_challenge }, { salonId: prefillSalonId });
   });
 
   router.post("/authorize", async (req, res) => {

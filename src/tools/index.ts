@@ -89,6 +89,7 @@ export function registerTools(server: McpServer, client: SalonRunnerClient) {
           service: svc.get(a.serviceId) ?? `service ${a.serviceId}`,
           provider: emp.get(a.employeeId) ?? `employee ${a.employeeId}`,
           status: a.status,
+          confirmed: /^conf(?:irm|rim)ed$/i.test(a.status ?? ""),
         }))
       );
     }
@@ -125,34 +126,6 @@ export function registerTools(server: McpServer, client: SalonRunnerClient) {
     async ({ appointmentId, reason }) => {
       await client.cancel(appointmentId, reason);
       return text({ ok: true, message: `Cancelled appointment ${appointmentId}.` });
-    }
-  );
-
-  const guidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-  server.registerTool(
-    "confirm_appointment",
-    {
-      title: "Confirm an appointment",
-      description:
-        "Confirm an appointment using the reminder link the salon emails/texts you (e.g. '…/customer/appointments/conf.htm?uid=<GUID>&uuid=<GUID>'). Pass the whole link as `link`, or the two GUIDs as `uid` and `uuid`. Idempotent — confirming twice still reports success.",
-      inputSchema: {
-        link: z.string().url().optional().describe("The full confirmation link from your reminder email/text"),
-        uid: z.string().regex(guidRe).optional().describe("The uid GUID from the link (use instead of `link`)"),
-        uuid: z.string().regex(guidRe).optional().describe("The uuid GUID from the link (use instead of `link`)"),
-      },
-    },
-    async ({ link, uid, uuid }) => {
-      if (link) {
-        const params = new URL(link).searchParams;
-        uid = params.get("uid") ?? uid;
-        uuid = params.get("uuid") ?? uuid;
-      }
-      if (!uid || !uuid) {
-        throw new Error("Provide the confirmation `link`, or both `uid` and `uuid` from it.");
-      }
-      const result = await client.confirm(uid, uuid);
-      return text(result);
     }
   );
 }

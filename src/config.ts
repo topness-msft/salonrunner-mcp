@@ -7,7 +7,6 @@ export interface Config {
   readOnly: boolean;
   base: string;
   apiV2: string;
-  rosyBase: string;
 }
 
 /** The salon-account credentials a user supplies (env in stdio mode, init screen in HTTP mode). */
@@ -30,7 +29,6 @@ export function envDefaults(): Omit<Config, "salonId" | "username" | "password" 
     readOnly: (process.env.SALONRUNNER_READ_ONLY ?? "false").toLowerCase() === "true",
     base: process.env.SALONRUNNER_BASE ?? "https://app.salonrunner.com",
     apiV2: process.env.SALONRUNNER_API_V2 ?? "https://app.rosysalonsoftware.com/api/v2",
-    rosyBase: process.env.SALONRUNNER_ROSY_BASE ?? "https://app.rosysalonsoftware.com",
   };
 }
 

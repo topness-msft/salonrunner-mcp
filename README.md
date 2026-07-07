@@ -20,7 +20,6 @@ Cursor, Copilot CLI) where credentials stay on your machine, or as a remote conn
 | `list_my_appointments` | Your upcoming appointments |
 | `book_appointment` | Book a slot returned by `find_availability` |
 | `cancel_appointment` | Cancel by appointment id |
-| `confirm_appointment` | Confirm an appointment from the salon's reminder link (`conf.htm?uid=…&uuid=…`) |
 
 ## How it works
 
@@ -31,9 +30,6 @@ list/find/book/cancel
         │      ──authv2─► customer JWT (30 min, auto-refreshed)
         │      ──reads──► app.rosysalonsoftware.com/api/v2  (Bearer JWT)
         └──────writes───► /customer/appointments/{book,cancel}.json  (cookie)
-
-confirm ─ no login ─► app.rosysalonsoftware.com/customer/appointments/conf.htm
-                      (the uid/uuid GUIDs in the salon's reminder link are the capability)
 ```
 
 `customerId` is discovered from your account after login; `corporateId` is read from the JWT.
@@ -50,7 +46,7 @@ There are two ways to run it, and they get their salon credentials differently:
 
 | Variable | Used by | Notes |
 |----------|---------|-------|
-| `SALONRUNNER_SALON_ID` | stdio | The `id` in your booking URL `…/customer/login.htm?id=XXXXX` |
+| `SALONRUNNER_SALON_ID` | stdio (+ optional HTTP) | The `id` in your booking URL `…/customer/login.htm?id=XXXXX`. In HTTP mode it's optional — if set, it pre-fills the salon id on the connector's login screen (handy for single-salon deployments and re-auth) |
 | `SALONRUNNER_USERNAME` / `SALONRUNNER_PASSWORD` | stdio | Your client login |
 | `SALONRUNNER_CUSTOMER_ID` | both | Auto-discovered; set only if discovery fails |
 | `SALONRUNNER_SLOT_MINUTES` | both | Salon booking granularity (default 15) |
