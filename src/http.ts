@@ -62,34 +62,51 @@ async function main() {
 
   app.post("/mcp", requireBearer, express.json(), async (req, res) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    let transport = sessionId ? transports[sessionId] : undefined;
+    const method = (req.body as any)?.method ?? "?";
+    console.error(
+      `[mcp] POST method=${method} session=${sessionId ? "y" : "n"} accept=${JSON.stringify(req.headers["accept"] ?? "")}`
+    );
+    try {
+      let transport = sessionId ? transports[sessionId] : undefined;
 
-    if (!transport && isInitializeRequest(req.body)) {
-      const creds = (req as AuthedRequest).salonCreds!;
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (id) => {
-          transports[id] = transport!;
-        },
-      });
-      transport.onclose = () => {
-        if (transport!.sessionId) delete transports[transport!.sessionId];
-      };
-      await createServer(clientFor(creds)).connect(transport);
-    } else if (!transport) {
-      return res.status(400).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "No valid session; send an initialize request first." },
-        id: null,
-      });
+      if (!transport && isInitializeRequest(req.body)) {
+        const creds = (req as AuthedRequest).salonCreds!;
+        console.error(
+          `[mcp] initialize protocolVersion=${(req.body as any)?.params?.protocolVersion} client=${JSON.stringify((req.body as any)?.params?.clientInfo ?? {})}`
+        );
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (id) => {
+            transports[id] = transport!;
+          },
+        });
+        transport.onclose = () => {
+          if (transport!.sessionId) delete transports[transport!.sessionId];
+        };
+        await createServer(clientFor(creds)).connect(transport);
+      } else if (!transport) {
+        console.error(`[mcp] no live session for method=${method} (session=${sessionId ?? "none"}) -> 400`);
+        return res.status(400).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "No valid session; send an initialize request first." },
+          id: null,
+        });
+      }
+
+      await transport.handleRequest(req, res, req.body);
+      console.error(`[mcp] handled method=${method} -> status=${res.statusCode}`);
+    } catch (err) {
+      console.error(`[mcp] ERROR method=${method}:`, err);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: "2.0", error: { code: -32000, message: "internal server error" }, id: null });
+      }
     }
-
-    await transport.handleRequest(req, res, req.body);
   });
 
   const bySession: express.RequestHandler = async (req, res) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     const transport = sessionId ? transports[sessionId] : undefined;
+    console.error(`[mcp] ${req.method} session=${sessionId ?? "none"} known=${!!transport}`);
     if (!transport) {
       res.status(400).send("Unknown session");
       return;

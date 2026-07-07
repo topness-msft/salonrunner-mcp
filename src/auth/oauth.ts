@@ -98,13 +98,6 @@ export function buildOAuth(
   const issuer = publicUrl.replace(/\/$/, "");
   const { sign, verify, encryptCreds, decryptCreds } = makeCrypto(signingKey);
 
-  // Advertise the salon id on the authorize link so re-auth in claude.ai pre-fills it.
-  // Per RFC 6749 §3.1 the client must retain this query component and append its own params.
-  const authorizeEndpoint =
-    defaultSalonId != null && String(defaultSalonId) !== ""
-      ? `${issuer}/authorize?salonId=${encodeURIComponent(String(defaultSalonId))}`
-      : `${issuer}/authorize`;
-
   const router = Router();
   router.use(express.urlencoded({ extended: true }));
   router.use(express.json());
@@ -116,7 +109,7 @@ export function buildOAuth(
   router.get("/.well-known/oauth-authorization-server", (_req, res) =>
     res.json({
       issuer,
-      authorization_endpoint: authorizeEndpoint,
+      authorization_endpoint: `${issuer}/authorize`,
       token_endpoint: `${issuer}/token`,
       registration_endpoint: `${issuer}/register`,
       response_types_supported: ["code"],
@@ -243,6 +236,7 @@ ${error ? `<p style="color:#c00">${escapeHtml(error)}</p>` : ""}
     const payload = verify(token, "access");
     const creds = payload ? decryptCreds(payload.enc) : null;
     if (!creds) {
+      console.error(`[auth] ${req.method} ${req.path} bearer rejected: hasToken=${!!token} verified=${!!payload}`);
       res
         .status(401)
         .set("WWW-Authenticate", `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource"`)
