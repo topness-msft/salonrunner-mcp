@@ -325,4 +325,31 @@ export class SalonRunnerClient {
     const raw = await this.customerGet(`/customer/appointments/cancel.json?${q.toString()}`);
     return { ok: true, raw };
   }
+
+  /**
+   * Confirm an appointment from a reminder link the salon emails/texts you, e.g.
+   * `…/customer/appointments/conf.htm?uid=<GUID>&uuid=<GUID>`.
+   *
+   * The two GUIDs are the capability — no login is required (the link is clicked
+   * straight from the message). The endpoint confirms on GET and renders an HTML
+   * page; success and failure are distinguished by its message text. Confirming
+   * an already-confirmed appointment is idempotent (still reports success).
+   */
+  async confirm(uid: string, uuid: string): Promise<{ ok: boolean; message: string }> {
+    const q = new URLSearchParams({ uid, uuid });
+    const res = await fetch(`${this.cfg.rosyBase}/customer/appointments/conf.htm?${q.toString()}`, {
+      headers: { Accept: "text/html", "User-Agent": "Mozilla/5.0" },
+    });
+    const body = await res.text();
+    if (/has been confirmed/i.test(body)) {
+      return { ok: true, message: "Your appointment has been confirmed." };
+    }
+    if (/could not be confirmed/i.test(body)) {
+      return {
+        ok: false,
+        message: "Appointment could not be confirmed — the link may be invalid or expired. Please call the salon.",
+      };
+    }
+    return { ok: false, message: `Unexpected response from confirmation endpoint (HTTP ${res.status}).` };
+  }
 }

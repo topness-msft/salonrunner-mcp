@@ -20,6 +20,7 @@ Cursor, Copilot CLI) where credentials stay on your machine, or as a remote conn
 | `list_my_appointments` | Your upcoming appointments |
 | `book_appointment` | Book a slot returned by `find_availability` |
 | `cancel_appointment` | Cancel by appointment id |
+| `confirm_appointment` | Confirm an appointment from the salon's reminder link (`conf.htm?uid=…&uuid=…`) |
 
 ## How it works
 
@@ -30,6 +31,9 @@ list/find/book/cancel
         │      ──authv2─► customer JWT (30 min, auto-refreshed)
         │      ──reads──► app.rosysalonsoftware.com/api/v2  (Bearer JWT)
         └──────writes───► /customer/appointments/{book,cancel}.json  (cookie)
+
+confirm ─ no login ─► app.rosysalonsoftware.com/customer/appointments/conf.htm
+                      (the uid/uuid GUIDs in the salon's reminder link are the capability)
 ```
 
 `customerId` is discovered from your account after login; `corporateId` is read from the JWT.
